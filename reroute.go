@@ -62,9 +62,7 @@ func (r *ReRouter) RegisterFallbacks(host string, fallbacks []string) error {
 func (r *ReRouter) RoundTrip(req *http.Request) (*http.Response, error) {
 	r.ensureConfig()
 
-	logger := r.Logger.
-		WithGroup("rerouter").
-		With("original-host", req.Host, "method", req.Method)
+	logger := r.Logger.WithGroup("rerouter").With("original-host", req.Host, "method", req.Method)
 
 	fallbacks, ok := r.fallbacks[req.Host]
 	if !ok || len(fallbacks) < 2 {
@@ -91,7 +89,7 @@ func (r *ReRouter) RoundTrip(req *http.Request) (*http.Response, error) {
 		reqLogger.Debug("Performing request")
 		fallbackRes, fallbackErr := r.Next.RoundTrip(newReq)
 		if fallbackErr == nil && fallbackRes.StatusCode < 500 {
-			reqLogger.Info("Request successful, marking host as primary")
+			reqLogger.Debug("Request successful")
 
 			if firstRes != nil {
 				_ = firstRes.Body.Close()
@@ -124,7 +122,7 @@ func (r *ReRouter) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 
-	logger.Info("Ran out of fallbacks")
+	logger.Debug("Ran out of fallbacks")
 
 	return firstRes, firstErr
 }
