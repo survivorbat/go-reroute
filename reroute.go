@@ -24,9 +24,9 @@ type ReRouter struct {
 	// Next is the next roundtripper to be called in the chain, defaults to http.DefaultTransport
 	Next http.RoundTripper
 
-	// fallbacks remain unexported to prevent concurrend writes to the map
+	// fallbacks remain unexported to prevent concurrent writes to the map
 	fallbacks     map[string][]string
-	fallbackMutex sync.Mutex
+	fallbackMutex sync.RWMutex
 }
 
 // RegisterFallbacks registers fallbacks for a host. Schemes and paths are stripped from both the
@@ -64,7 +64,10 @@ func (r *ReRouter) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	logger := r.Logger.WithGroup("rerouter").With("original-host", req.Host, "method", req.Method)
 
+	r.fallbackMutex.RLock()
 	fallbacks, ok := r.fallbacks[req.Host]
+	r.fallbackMutex.RUnlock()
+
 	if !ok || len(fallbacks) < 2 {
 		logger.Debug("No (additional) hosts defined, passing to next roundtripper")
 		return r.Next.RoundTrip(req)
@@ -154,14 +157,15 @@ func (r *ReRouter) ensureConfig() {
 	}
 
 	if r.fallbacks == nil {
-		// TODO: Consider whether this needs to be locked
+		r.fallbackMutex.Lock()
 		r.fallbacks = make(map[string][]string)
+		r.fallbackMutex.Unlock()
 	}
 }
 
 // normalizeHost parses the given hostURL and returns only the hostname and port.
 func normalizeHost(hostURL string) (string, error) {
-	// If no scheme is in the URT, add a dummy one to ensure url.Parse has a host
+	// If no scheme is in the URL, add a dummy one to ensure url.Parse has a host
 	if !strings.Contains(hostURL, "://") {
 		hostURL = "dummy://" + strings.TrimSpace(hostURL)
 	}

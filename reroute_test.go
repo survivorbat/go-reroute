@@ -1,9 +1,13 @@
 package reroute
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -208,6 +212,69 @@ func TestReRouter_Transport_ReassignsPrimary(t *testing.T) {
 
 	assert.Equal(t, server200.URL, "http://"+hosts[0])
 	assert.Equal(t, "localhost:1", hosts[1])
+}
+
+const concurrentRequestCount = 100
+
+func TestReRouter_Transport_WorksConcurrently(t *testing.T) {
+	t.Parallel()
+	// Arrange
+	faultyServerCache := sync.Map{}
+	faultyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		index, _ := strconv.Atoi(req.URL.Query().Get("index"))
+
+		// Only return a 200 if the number is even OR we have seen this request before
+		_, seenBefore := faultyServerCache.LoadOrStore(index, true)
+		if seenBefore || index%2 == 0 {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer faultyServer.Close()
+
+	reqs := make([]*http.Request, concurrentRequestCount)
+
+	for index := range concurrentRequestCount {
+		reqs[index], _ = http.NewRequestWithContext(t.Context(), http.MethodGet, fmt.Sprintf("%s?index=%d", faultyServer.URL, index), http.NoBody)
+	}
+
+	reRouter := new(ReRouter)
+
+	err := reRouter.RegisterFallbacks(faultyServer.URL, []string{faultyServer.URL})
+	require.NoError(t, err)
+
+	client := &http.Client{Timeout: timeout, Transport: reRouter}
+
+	responses := make([]*http.Response, concurrentRequestCount)
+	errs := make([]error, concurrentRequestCount)
+
+	waitGroup := new(sync.WaitGroup)
+	waitGroup.Add(concurrentRequestCount)
+
+	// Act
+	for index, req := range reqs {
+		go func() {
+			defer waitGroup.Done()
+
+			responses[index], errs[index] = client.Do(req)
+
+			// Skip doing this at the end
+			if responses[index] != nil {
+				responses[index].Body.Close()
+			}
+		}()
+	}
+
+	// Assert
+	waitGroup.Wait()
+
+	require.NoError(t, errors.Join(errs...))
+
+	for _, res := range responses {
+		assert.Equal(t, http.StatusOK, res.StatusCode)
+	}
 }
 
 func TestNormalizeHost_ReturnsExpectedHost(t *testing.T) {
