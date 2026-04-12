@@ -258,9 +258,7 @@ func TestReRouter_Transport_WorksConcurrently(t *testing.T) {
 		go func() {
 			defer waitGroup.Done()
 
-			responses[index], errs[index] = client.Do(req)
-
-			// Skip doing this at the end
+			responses[index], errs[index] = client.Do(req) //nolint:bodyclose // It is below
 			if responses[index] != nil {
 				responses[index].Body.Close()
 			}
