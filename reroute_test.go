@@ -214,7 +214,7 @@ func TestReRouter_Transport_ReassignsPrimary(t *testing.T) {
 	assert.Equal(t, "localhost:1", hosts[1])
 }
 
-const concurrentRequestCount = 100
+const concurrentRequestCount = 10000
 
 func TestReRouter_Transport_WorksConcurrently(t *testing.T) {
 	t.Parallel()
