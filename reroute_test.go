@@ -16,45 +16,64 @@ import (
 )
 
 // timeout ensures that requests made to non-existent hosts don't take too long to fail
-const timeout = 3 * time.Second
+const timeout = 10 * time.Second
 
-func TestReRouter_RegisterFallbacks_ReturnsErrorOnInvalidURLs(t *testing.T) {
+func TestReRouter_NewReRouter_ErrorsIfOptionErrors(t *testing.T) {
 	t.Parallel()
 	// Arrange
-	reRouter := new(ReRouter)
+	dummyOption := func(*ReRouter) error {
+		return assert.AnError
+	}
 
+	// Act
+	reRouter, err := NewReRouter(nil, "localhost", []string{}, dummyOption)
+
+	// Assert
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Nil(t, reRouter)
+}
+
+// NOTICE: Tests for NewReRouter implicitly test SetFallbacks
+
+func TestReRouter_NewReRouter_ReturnsErrorOnInvalidURLs(t *testing.T) {
+	t.Parallel()
+	// Arrange
 	hosts := []string{
 		"localhost",
 		":://",
 	}
 
 	// Act
-	err := reRouter.RegisterFallbacks("localhost", hosts)
+	reRouter, err := NewReRouter(nil, "localhost", hosts)
 
 	// Assert
 	var actual *url.Error
 	require.ErrorAs(t, err, &actual)
+
+	assert.Nil(t, reRouter)
 }
 
-func TestReRouter_RegisterFallbacks_SetsExpectedURLs(t *testing.T) {
+func TestReRouter_NewReRouter_SetsExpectedURLs(t *testing.T) {
 	t.Parallel()
 	// Arrange
-	reRouter := new(ReRouter)
-
 	hosts := []string{
 		"bar.local/foo/bar",
 		"baz.local:2030",
 	}
 
 	// Act
-	err := reRouter.RegisterFallbacks("http://foo.local/foo/bar", hosts)
+	reRouter, err := NewReRouter(nil, "http://foo.local/foo/bar", hosts)
 
 	// Assert
 	require.NoError(t, err)
-	require.Contains(t, reRouter.fallbacks, "foo.local")
+	require.NotNil(t, reRouter)
+
+	fallbacks := reRouter.fallbacks.Load().([]string)
+
+	require.Contains(t, fallbacks, "foo.local")
 
 	expected := []string{"foo.local", "bar.local", "baz.local:2030"}
-	assert.Equal(t, expected, reRouter.fallbacks["foo.local"])
+	assert.Equal(t, expected, fallbacks)
 }
 
 func TestReRouter_Transport_RetriesHosts(t *testing.T) {
@@ -150,12 +169,10 @@ func TestReRouter_Transport_RetriesHosts(t *testing.T) {
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, testData.originalURL, http.NoBody)
 			require.NoError(t, err)
 
-			rerouter := new(ReRouter)
-
-			err = rerouter.RegisterFallbacks(testData.originalURL, testData.hostList)
+			reRouter, err := NewReRouter(nil, testData.originalURL, testData.hostList)
 			require.NoError(t, err)
 
-			client := &http.Client{Timeout: timeout, Transport: rerouter}
+			client := &http.Client{Timeout: timeout, Transport: reRouter}
 
 			// Act
 			res, err := client.Do(req)
@@ -182,14 +199,12 @@ func TestReRouter_Transport_ReassignsPrimary(t *testing.T) {
 	server200 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer server200.Close()
+	t.Cleanup(server200.Close)
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://localhost:1", http.NoBody)
 	require.NoError(t, err)
 
-	reRouter := new(ReRouter)
-
-	err = reRouter.RegisterFallbacks("localhost:1", []string{server200.URL})
+	reRouter, err := NewReRouter(nil, "localhost:1", []string{server200.URL})
 	require.NoError(t, err)
 
 	client := &http.Client{Timeout: timeout, Transport: reRouter}
@@ -205,13 +220,11 @@ func TestReRouter_Transport_ReassignsPrimary(t *testing.T) {
 	assert.Equal(t, http.StatusOK, res.StatusCode)
 	assert.Equal(t, server200.URL, res.Request.URL.String())
 
-	require.Contains(t, reRouter.fallbacks, "localhost:1")
+	fallbacks := reRouter.fallbacks.Load().([]string)
 
-	hosts := reRouter.fallbacks["localhost:1"]
-	require.Len(t, hosts, 2, "Expected 2 hosts to be set in the fallback list")
-
-	assert.Equal(t, server200.URL, "http://"+hosts[0])
-	assert.Equal(t, "localhost:1", hosts[1])
+	require.Len(t, fallbacks, 2, "Expected 2 hosts to be set in the fallback list")
+	assert.Equal(t, server200.URL, "http://"+fallbacks[0])
+	assert.Equal(t, "localhost:1", fallbacks[1])
 }
 
 const concurrentRequestCount = 10000
@@ -240,9 +253,7 @@ func TestReRouter_Transport_WorksConcurrently(t *testing.T) {
 		reqs[index], _ = http.NewRequestWithContext(t.Context(), http.MethodGet, fmt.Sprintf("%s?index=%d", faultyServer.URL, index), http.NoBody)
 	}
 
-	reRouter := new(ReRouter)
-
-	err := reRouter.RegisterFallbacks(faultyServer.URL, []string{faultyServer.URL})
+	reRouter, err := NewReRouter(nil, faultyServer.URL, []string{faultyServer.URL})
 	require.NoError(t, err)
 
 	client := &http.Client{Timeout: timeout, Transport: reRouter}

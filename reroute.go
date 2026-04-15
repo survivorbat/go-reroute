@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Compile-time interface checks
@@ -24,32 +25,58 @@ type ReRouter struct {
 	// Next is the next roundtripper to be called in the chain, defaults to http.DefaultTransport
 	Next http.RoundTripper
 
-	// fallbacks remain unexported to prevent concurrent writes to the map
-	fallbacks     map[string][]string
-	fallbackMutex sync.RWMutex
+	// fallbacks remain unexported to ensure it is only ever used internally.
+	fallbacks atomic.Value // []string
+
+	// configOnce ensures the Logger and Next are only set as defaults once
+	configOnce sync.Once
 }
 
-// RegisterFallbacks registers fallbacks for a host. Schemes and paths are stripped from both the
-// host and the callbacks so that only the hostname and port (if any) remain.
-func (r *ReRouter) RegisterFallbacks(host string, fallbacks []string) error {
-	r.ensureConfig()
+// NewReRouter instantiates a new ReRouter with options
+func NewReRouter(next http.RoundTripper, host string, fallbacks []string, options ...Option) (*ReRouter, error) {
+	reRouter := &ReRouter{
+		Next:   next,
+		Logger: slog.New(slog.DiscardHandler),
+	}
 
-	hosts := make([]string, len(fallbacks)+1)
-	errs := make([]error, len(fallbacks)+1)
+	errs := make([]error, len(options))
 
-	for index, fallback := range append([]string{host}, fallbacks...) {
-		hosts[index], errs[index] = normalizeHost(fallback)
+	for index, opt := range options {
+		err := opt(reRouter)
+		if err != nil {
+			errs[index] = fmt.Errorf("failed to apply option %d: %w", index, err)
+		}
 	}
 
 	err := errors.Join(errs...)
 	if err != nil {
-		return err
+		return nil, errors.Join(errs...)
 	}
 
-	r.fallbackMutex.Lock()
-	defer r.fallbackMutex.Unlock()
+	err = reRouter.SetFallbacks(host, fallbacks)
+	if err != nil {
+		// Error is already wrapped
+		return nil, err
+	}
 
-	r.fallbacks[hosts[0]] = hosts
+	return reRouter, nil
+}
+
+// SetFallbacks sets the fallbacks for the ReRouter. This call is concurrency safe.
+func (r *ReRouter) SetFallbacks(host string, fallbacks []string) error {
+	fallbackHosts := make([]string, len(fallbacks)+1)
+	errs := make([]error, len(fallbacks)+1)
+
+	for index, host := range append([]string{host}, fallbacks...) {
+		fallbackHosts[index], errs[index] = normalizeHost(host)
+	}
+
+	err := errors.Join(errs...)
+	if err != nil {
+		return fmt.Errorf("failed to set fallbacks: %w", err)
+	}
+
+	r.fallbacks.Store(fallbackHosts)
 
 	return nil
 }
@@ -64,20 +91,11 @@ func (r *ReRouter) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	logger := r.Logger.WithGroup("rerouter").With("original-host", req.Host, "method", req.Method)
 
-	r.fallbackMutex.RLock()
-	fallbacks, ok := r.fallbacks[req.Host]
-	r.fallbackMutex.RUnlock()
-
-	if !ok || len(fallbacks) < 2 {
-		logger.Debug("No (additional) hosts defined, passing to next roundtripper")
-		return r.Next.RoundTrip(req)
-	}
-
-	logger = logger.With("fallbacks", fallbacks)
-
 	// Keep track of the first response we got to return it if all alternatives fail
 	var firstRes *http.Response
 	var firstErr error
+
+	fallbacks := r.fallbacks.Load().([]string)
 
 	for index, fallback := range fallbacks {
 		reqLogger := logger.With("target-host", fallback, "index", index)
@@ -98,7 +116,9 @@ func (r *ReRouter) RoundTrip(req *http.Request) (*http.Response, error) {
 				_ = firstRes.Body.Close()
 			}
 
-			r.markPrimary(req.Host, fallbacks, index)
+			// NOTICE: It is possible that the fallbacks and index have become stale. Due to the use-case of this library,
+			// this is considered an acceptable drawback.
+			r.markPrimary(fallbacks, index)
 
 			return fallbackRes, fallbackErr
 		}
@@ -130,37 +150,41 @@ func (r *ReRouter) RoundTrip(req *http.Request) (*http.Response, error) {
 	return firstRes, firstErr
 }
 
-// markPrimary marks a host as the new primary and ensures other calls will attempt to reach this host first
-func (r *ReRouter) markPrimary(original string, urls []string, index int) {
+// markPrimary marks a host as the new primary and ensures other calls will attempt to reach this host first.
+//
+// NOTICE: Concurrent calls could lead to lost updates. Due to the use-case of this library, this considered acceptable.
+func (r *ReRouter) markPrimary(current []string, index int) {
 	if index == 0 {
 		// It's already the primary
 		return
 	}
 
-	r.fallbackMutex.Lock()
-	defer r.fallbackMutex.Unlock()
+	// Can't write to the current list otherwise a race condition occurs
+	newFallbacks := append([]string{}, current...)
 
-	newURLs := append([]string{urls[index]}, urls[:index]...)
-	newURLs = append(newURLs, urls[index+1:]...)
+	// Swap the working one to the front
+	newFallbacks[0], newFallbacks[index] = newFallbacks[index], newFallbacks[0]
 
-	r.fallbacks[original] = newURLs
+	r.fallbacks.Store(newFallbacks)
 }
 
 // ensureConfig ensures all config values are set and enables the use of &ReRouter{} as-is
 func (r *ReRouter) ensureConfig() {
-	if r.Logger == nil {
-		r.Logger = slog.New(slog.DiscardHandler)
-	}
+	// Since this code is all concurrent, ensure the variable setting is only performed once
+	r.configOnce.Do(func() {
+		// Doesn't make much sense, but bare &ReRouter{} is considered a valid instantiation with the SetFallbacks method
+		if r.fallbacks.Load() == nil {
+			r.fallbacks.Store(make([]string, 0))
+		}
 
-	if r.Next == nil {
-		r.Next = http.DefaultTransport
-	}
+		if r.Logger == nil {
+			r.Logger = slog.New(slog.DiscardHandler)
+		}
 
-	if r.fallbacks == nil {
-		r.fallbackMutex.Lock()
-		r.fallbacks = make(map[string][]string)
-		r.fallbackMutex.Unlock()
-	}
+		if r.Next == nil {
+			r.Next = http.DefaultTransport
+		}
+	})
 }
 
 // normalizeHost parses the given hostURL and returns only the hostname and port.

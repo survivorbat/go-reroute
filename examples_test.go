@@ -13,9 +13,7 @@ func ExampleReRouter() {
 	}))
 	defer httpServer.Close()
 
-	reRouter := &ReRouter{}
-
-	_ = reRouter.RegisterFallbacks("localhost:1", []string{httpServer.URL})
+	reRouter, _ := NewReRouter(nil, "localhost:1", []string{httpServer.URL})
 
 	client := &http.Client{Transport: reRouter}
 

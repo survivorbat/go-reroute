@@ -14,16 +14,22 @@ go get github.com/survivorbat/go-reroute
 ```go
 package main
 
+import (
+  "fmt"
+  "context"
+  "net/http"
+
+  "github.com/survivorbat/go-reroute"
+)
+
 func getClient() *http.Client {
-	reRouter := &ReRouter{}
+  reRouter, _ := reroute.New(http.DefaultTransport, "localhost:1", []string{"localhost:8080"})
 
-	_ = reRouter.RegisterFallbacks("localhost:1", []string{"localhost:8080"})
+  client := &http.Client{Transport: reRouter}
 
-	client := &http.Client{Transport: reRouter}
+  req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost:1/foo/bar", http.NoBody)
 
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost:1/foo/bar", http.NoBody)
-
-	res, _ := client.Do(req)
+  res, _ := client.Do(req)
 
   fmt.Println(res.Request.URL) // localhost:8080
 }
@@ -33,3 +39,4 @@ func getClient() *http.Client {
 
 - Perhaps add switchover capabilities
 - Perhaps add loadbalancer capabilities
+- Perhaps improve the `markPrimary` selection
