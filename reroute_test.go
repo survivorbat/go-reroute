@@ -1,12 +1,15 @@
 package reroute
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -157,7 +160,6 @@ func TestReRouter_Transport_RetriesHosts(t *testing.T) {
 		"first failure is returned on error": {
 			originalURL: "http://localhost:1",
 			hostList:    []string{server500.URL},
-			expectedURL: "http://localhost:1",
 			expectError: true,
 		},
 	}
@@ -191,6 +193,48 @@ func TestReRouter_Transport_RetriesHosts(t *testing.T) {
 			assert.Equal(t, testData.expectedURL, res.Request.URL.String())
 		})
 	}
+}
+
+// customTransport is necesary to test if bodies can be closed, because http.DefaultTransport
+// restores them automatically.
+type customTransport struct {
+	requestBodies []string
+}
+
+func (c *customTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	c.requestBodies = append(c.requestBodies, string(body))
+
+	return nil, assert.AnError
+}
+
+func TestReRouter_Transport_PreservesBodyAcrossRequests(t *testing.T) {
+	t.Parallel()
+	// Arrange
+	body := strings.NewReader("foo")
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://localhost:1", body)
+	require.NoError(t, err)
+
+	next := &customTransport{}
+
+	reRouter, err := NewReRouter(next, "http://localhost:1", []string{"http://localhost:1", "http://localhost:1"})
+	require.NoError(t, err)
+
+	client := &http.Client{Timeout: timeout, Transport: reRouter}
+
+	// Act
+	_, err = client.Do(req)
+
+	// Assert
+	require.ErrorIs(t, err, assert.AnError)
+
+	expected := []string{"foo", "foo", "foo"}
+	assert.Equal(t, expected, next.requestBodies)
 }
 
 func TestReRouter_Transport_ReassignsPrimary(t *testing.T) {
@@ -318,4 +362,39 @@ func TestNormalizeHost_ReturnsErrorOnInvalidURL(t *testing.T) {
 	// Assert
 	var actual *url.Error
 	require.ErrorAs(t, err, &actual)
+}
+
+type ctxKey struct{}
+
+var ctxKeyA ctxKey
+
+func TestCloneWithBody_ClonesWithBody(t *testing.T) {
+	t.Parallel()
+	// Arrange
+	ctx := context.WithValue(t.Context(), ctxKeyA, "b")
+	body := strings.NewReader("abc")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost:1", body)
+	require.NoError(t, err)
+
+	// Act
+	cloned, err := cloneWithBody(req)
+
+	// assert
+	require.NoError(t, err)
+
+	assert.Equal(t, req.Header, cloned.Header)
+	assert.Equal(t, req.Method, cloned.Method)
+	assert.Equal(t, req.URL, cloned.URL)
+
+	reqBody, err := io.ReadAll(req.Body)
+	require.NoError(t, err)
+	clonedBody, err := io.ReadAll(cloned.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, "abc", string(reqBody))
+	assert.Equal(t, "abc", string(clonedBody))
+
+	assert.Equal(t, "b", req.Context().Value(ctxKeyA))
+	assert.Equal(t, "b", cloned.Context().Value(ctxKeyA))
 }
