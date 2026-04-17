@@ -32,8 +32,8 @@ type ReRouter struct {
 	configOnce sync.Once
 }
 
-// NewReRouter instantiates a new ReRouter with options
-func NewReRouter(next http.RoundTripper, host string, fallbacks []string, options ...Option) (*ReRouter, error) {
+// New instantiates a new ReRouter with options
+func New(next http.RoundTripper, host string, fallbacks []string, options ...Option) (*ReRouter, error) {
 	reRouter := &ReRouter{
 		Next:   next,
 		Logger: slog.New(slog.DiscardHandler),

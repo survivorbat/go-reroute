@@ -21,7 +21,7 @@ import (
 // timeout ensures that requests made to non-existent hosts don't take too long to fail
 const timeout = 10 * time.Second
 
-func TestReRouter_NewReRouter_ErrorsIfOptionErrors(t *testing.T) {
+func TestReRouter_New_ErrorsIfOptionErrors(t *testing.T) {
 	t.Parallel()
 	// Arrange
 	dummyOption := func(*ReRouter) error {
@@ -29,16 +29,16 @@ func TestReRouter_NewReRouter_ErrorsIfOptionErrors(t *testing.T) {
 	}
 
 	// Act
-	reRouter, err := NewReRouter(nil, "localhost", []string{}, dummyOption)
+	reRouter, err := New(nil, "localhost", []string{}, dummyOption)
 
 	// Assert
 	require.ErrorIs(t, err, assert.AnError)
 	assert.Nil(t, reRouter)
 }
 
-// NOTICE: Tests for NewReRouter implicitly test SetFallbacks
+// NOTICE: Tests for New implicitly test SetFallbacks
 
-func TestReRouter_NewReRouter_ReturnsErrorOnInvalidURLs(t *testing.T) {
+func TestReRouter_New_ReturnsErrorOnInvalidURLs(t *testing.T) {
 	t.Parallel()
 	// Arrange
 	hosts := []string{
@@ -47,7 +47,7 @@ func TestReRouter_NewReRouter_ReturnsErrorOnInvalidURLs(t *testing.T) {
 	}
 
 	// Act
-	reRouter, err := NewReRouter(nil, "localhost", hosts)
+	reRouter, err := New(nil, "localhost", hosts)
 
 	// Assert
 	var actual *url.Error
@@ -56,7 +56,7 @@ func TestReRouter_NewReRouter_ReturnsErrorOnInvalidURLs(t *testing.T) {
 	assert.Nil(t, reRouter)
 }
 
-func TestReRouter_NewReRouter_SetsExpectedURLs(t *testing.T) {
+func TestReRouter_New_SetsExpectedURLs(t *testing.T) {
 	t.Parallel()
 	// Arrange
 	hosts := []string{
@@ -65,7 +65,7 @@ func TestReRouter_NewReRouter_SetsExpectedURLs(t *testing.T) {
 	}
 
 	// Act
-	reRouter, err := NewReRouter(nil, "http://foo.local/foo/bar", hosts)
+	reRouter, err := New(nil, "http://foo.local/foo/bar", hosts)
 
 	// Assert
 	require.NoError(t, err)
@@ -171,7 +171,7 @@ func TestReRouter_Transport_RetriesHosts(t *testing.T) {
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, testData.originalURL, http.NoBody)
 			require.NoError(t, err)
 
-			reRouter, err := NewReRouter(nil, testData.originalURL, testData.hostList)
+			reRouter, err := New(nil, testData.originalURL, testData.hostList)
 			require.NoError(t, err)
 
 			client := &http.Client{Timeout: timeout, Transport: reRouter}
@@ -195,7 +195,7 @@ func TestReRouter_Transport_RetriesHosts(t *testing.T) {
 	}
 }
 
-// customTransport is necesary to test if bodies can be closed, because http.DefaultTransport
+// customTransport is necessary to test if bodies can be closed, because http.DefaultTransport
 // restores them automatically.
 type customTransport struct {
 	requestBodies []string
@@ -222,16 +222,17 @@ func TestReRouter_Transport_PreservesBodyAcrossRequests(t *testing.T) {
 
 	next := &customTransport{}
 
-	reRouter, err := NewReRouter(next, "http://localhost:1", []string{"http://localhost:1", "http://localhost:1"})
+	reRouter, err := New(next, "http://localhost:1", []string{"http://localhost:1", "http://localhost:1"})
 	require.NoError(t, err)
 
 	client := &http.Client{Timeout: timeout, Transport: reRouter}
 
 	// Act
-	_, err = client.Do(req)
+	res, err := client.Do(req) //nolint:bodyclose // It's meant to be nil here
 
 	// Assert
 	require.ErrorIs(t, err, assert.AnError)
+	require.Nil(t, res)
 
 	expected := []string{"foo", "foo", "foo"}
 	assert.Equal(t, expected, next.requestBodies)
@@ -248,7 +249,7 @@ func TestReRouter_Transport_ReassignsPrimary(t *testing.T) {
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://localhost:1", http.NoBody)
 	require.NoError(t, err)
 
-	reRouter, err := NewReRouter(nil, "localhost:1", []string{server200.URL})
+	reRouter, err := New(nil, "localhost:1", []string{server200.URL})
 	require.NoError(t, err)
 
 	client := &http.Client{Timeout: timeout, Transport: reRouter}
@@ -297,7 +298,7 @@ func TestReRouter_Transport_WorksConcurrently(t *testing.T) {
 		reqs[index], _ = http.NewRequestWithContext(t.Context(), http.MethodGet, fmt.Sprintf("%s?index=%d", faultyServer.URL, index), http.NoBody)
 	}
 
-	reRouter, err := NewReRouter(nil, faultyServer.URL, []string{faultyServer.URL})
+	reRouter, err := New(nil, faultyServer.URL, []string{faultyServer.URL})
 	require.NoError(t, err)
 
 	client := &http.Client{Timeout: timeout, Transport: reRouter}

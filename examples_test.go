@@ -13,7 +13,7 @@ func ExampleReRouter() {
 	}))
 	defer httpServer.Close()
 
-	reRouter, _ := NewReRouter(nil, "localhost:1", []string{httpServer.URL})
+	reRouter, _ := New(nil, "localhost:1", []string{httpServer.URL})
 
 	client := &http.Client{Transport: reRouter}
 
