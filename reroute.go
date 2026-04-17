@@ -100,7 +100,12 @@ func (r *ReRouter) RoundTrip(req *http.Request) (*http.Response, error) {
 	for index, fallback := range fallbacks {
 		reqLogger := logger.With("target-host", fallback, "index", index)
 
-		newReq := req.Clone(req.Context())
+		// DefaultTransport refills the body automatically, other transports might not
+		newReq, err := cloneWithBody(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to clone body: %w", err)
+		}
+
 		newReq.URL.Host = fallback
 
 		if newReq.Header.Get("Host") != "" {
@@ -200,4 +205,22 @@ func normalizeHost(hostURL string) (string, error) {
 	}
 
 	return parsed.Host, nil
+}
+
+// cloneWithBody is necessary because req.Clone only makes a shallow clone of the body
+func cloneWithBody(req *http.Request) (*http.Request, error) {
+	cloned := req.Clone(req.Context())
+
+	if req.GetBody == nil {
+		return cloned, nil
+	}
+
+	body, err := req.GetBody()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get body: %w", err)
+	}
+
+	cloned.Body = body
+
+	return cloned, nil
 }
